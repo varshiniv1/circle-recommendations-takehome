@@ -1,116 +1,225 @@
-# Seed dataset — Recommend Circles to Join
+# Circle Recommendations API
 
-This folder is the dataset for the take-home. It's a small, **fully synthetic** snapshot
-of a Lean In Connect–style community: members, Circles, who belongs to which Circle,
-the topic taxonomy, and recent Circle feed activity.
+A deterministic recommendation API for suggesting Lean In-style peer Circles to members. The service loads and validates the supplied synthetic JSON dataset at startup, filters ineligible Circles, ranks candidates with explainable signals, and diversifies the final list to avoid redundant recommendations.
 
-Everything here is generated (`generate.mjs`) — no real people, no real content.
+## Technology choices
 
-## Files
+- Modern JavaScript with ES modules
+- Node.js built-in HTTP server
+- Node.js built-in test runner and strict assertions
+- In-memory JSON data for a dependency-free runtime
+- A normalized SQLite design in `schema.sql` for the intended relational model
 
-| File | Rows | What it is |
-| --- | --- | --- |
-| `data/topics.json` | 22 | The topic taxonomy Circles and members are tagged with |
-| `data/users.json` | 100 | Members: profile fields + stated topic interests |
-| `data/circles.json` | 40 | Circles: profile, topic, capacity, and activity aggregates |
-| `data/memberships.json` | ~440 | Who belongs to which Circle, and their role |
-| `data/activity.json` | ~390 | Recent Circle feed posts with engagement counts |
+The project has no runtime or development package dependencies.
 
-## Loading it
+## Requirements
 
-The data is plain JSON so it drops into anything — Postgres, SQLite, or just an
-in-memory array. Load it however suits your design; you don't have to mirror our shapes.
+- Node.js 20 or newer
+- npm
 
-```js
-const users = JSON.parse(fs.readFileSync("data/users.json", "utf8"));
+## Install, test, and run
+
+```bash
+npm install
+npm test
+npm start
 ```
 
-## Data dictionary
+The server listens on `http://localhost:3000` by default. Set the `PORT` environment variable before running `npm start` to use a different port.
 
-### `topics.json`
-| field | type | notes |
-| --- | --- | --- |
-| `id` | int | |
-| `slug` | string | kebab-case, e.g. `negotiation` |
-| `label` | string | display name |
-| `domain` | string | always `content` here |
+## API
 
-### `users.json`
-| field | type | notes |
-| --- | --- | --- |
-| `id` | int | |
-| `first_name`, `last_name` | string | synthetic |
-| `has_photo` | bool | whether a profile photo is set |
-| `bio` | string \| null | |
-| `job_title` | string \| null | |
-| `company` | string \| null | |
-| `industry` | string \| null | |
-| `location` | string \| null | |
-| `joined_at` | ISO datetime | account age / tenure signal |
-| `topic_interests` | string[] | topic slugs the member selected; **may be empty** |
-| `profile_completeness` | number 0–1 | share of {photo, bio, job title, company-or-industry, location} present |
+### Get Circle recommendations
 
-### `circles.json`
-| field | type | notes |
-| --- | --- | --- |
-| `id` | int | |
-| `name`, `slug`, `description` | string / null | `description` and `cover_image_url` may be null |
-| `topic` | string \| null | topic slug; **some Circles have no topic** |
-| `tags` | string[] | free-form topic-ish tags |
-| `cover_image_url` | string \| null | |
-| `format` | enum | `in_person` \| `virtual` \| `hybrid` |
-| `access` | enum | `public` \| `unlisted` |
-| `join_policy` | enum | `open` \| `request` |
-| `max_members` | int \| null | capacity; **null means uncapped** |
-| `member_count` | int | current members |
-| `created_at` | ISO datetime | |
-| `last_activity_at` | ISO datetime | timestamp of the most recent activity |
-| `feed_posts_30d` | int | posts in the last 30 days |
-| `chat_messages_30d` | int | group-chat message volume in the last 30 days (aggregate count only) |
+```http
+GET /v1/users/{userId}/circle-recommendations?limit=5
+```
 
-### `memberships.json`
-| field | type | notes |
-| --- | --- | --- |
-| `user_id` | int | → `users.id` |
-| `circle_id` | int | → `circles.id` |
-| `role` | enum | `member` \| `leader` (a Circle's leaders are just members with `role=leader`) |
-| `joined_at` | ISO datetime | |
+| Parameter | Location | Required | Rules |
+| --- | --- | --- | --- |
+| `userId` | Path | Yes | Positive safe integer for an existing user |
+| `limit` | Query | No | Integer from 1 to 10; defaults to 5 |
 
-### `activity.json`
-| field | type | notes |
-| --- | --- | --- |
-| `id` | int | |
-| `circle_id` | int | → `circles.id` |
-| `author_user_id` | int | → `users.id` (always a member of that Circle) |
-| `body` | string | post text |
-| `reaction_count`, `comment_count`, `save_count` | int | engagement on the post |
-| `created_at` | ISO datetime | |
+Unknown query parameters, repeated `limit` parameters, and GET request bodies are rejected. The endpoint returns fewer than `limit` results when too few Circles are eligible.
 
-## A few things are intentionally *derived*, not stored
+#### Success response
 
-Mirroring the real product, some signals aren't handed to you as a column — you decide
-how to compute them:
+Example for `GET /v1/users/23/circle-recommendations?limit=1`:
 
-- **Is a Circle full?** Compare `member_count` to `max_members` (and `max_members` can be null).
-- **How active is a Circle?** Combine `feed_posts_30d`, `last_activity_at`, `chat_messages_30d`,
-  and engagement in `activity.json` however you think best.
-- **A Circle's leaders and their profiles** come from `memberships` (`role=leader`) joined to `users`.
+```json
+{
+  "data": {
+    "user_id": 23,
+    "mode": "personalized",
+    "snapshot_at": "2026-09-21T00:00:00.000Z",
+    "recommendations": [
+      {
+        "rank": 1,
+        "circle": {
+          "id": 22,
+          "name": "Level Up Collective",
+          "slug": "level-up-collective",
+          "description": "A supportive circle for women focused on getting promoted.",
+          "topic": "getting-promoted",
+          "tags": ["getting-promoted"],
+          "cover_image_url": "https://images.example.org/circles/level-up-collective.jpg",
+          "format": "hybrid",
+          "access": "public",
+          "join_policy": "request",
+          "member_count": 14,
+          "max_members": 20
+        },
+        "matches": [
+          {
+            "topic": "getting-promoted",
+            "source": "primary"
+          }
+        ],
+        "reason_codes": [
+          "PRIMARY_TOPIC_MATCH",
+          "RECENT_ACTIVITY",
+          "SPACE_AVAILABLE",
+          "REQUIRES_APPROVAL"
+        ],
+        "explanation": "Matches your interest in Getting promoted; this Circle has recent activity, and joining requires approval."
+      }
+    ]
+  },
+  "meta": {
+    "requested_limit": 1,
+    "returned": 1
+  }
+}
+```
 
-## What we deliberately did *not* include
+Scores and internal scoring components are intentionally not exposed.
 
-- **Embeddings / precomputed similarity.** Topic overlap and the fields above are enough for this exercise.
-- **Raw group-chat message text.** Only the aggregate `chat_messages_30d` count, for privacy realism.
+#### Error response
 
-## Named records for the scenarios
+Errors use `application/problem+json`:
 
-The assignment says we'll run your submission against planted records. Here they are —
-build so these return sensible results, and be ready to talk through them:
+```json
+{
+  "type": "urn:circle-recommendations:error:invalid-limit",
+  "title": "Invalid recommendation request",
+  "status": 400,
+  "code": "INVALID_LIMIT",
+  "detail": "limit must be one integer between 1 and 10.",
+  "request_id": "7037db9a-7e8f-4535-adcf-4f29f5e68836",
+  "errors": [
+    {
+      "field": "limit",
+      "message": "limit must be one integer between 1 and 10."
+    }
+  ]
+}
+```
 
-| Scenario | Run for | What's planted |
-| --- | --- | --- |
-| **Cold start** | `user_id 42` | No memberships, no stated interests, empty profile (`profile_completeness = 0`) |
-| **Obvious matches** | `user_id 7` | Interests `leadership-skills`, `public-speaking`; strong active/open Circles exist for both (`#5 Women Who Lead`, `#6 Speak Up Circle`) that she hasn't joined |
-| **Duplicate Circles** | `user_id 15` | Interest `negotiation`; Circles `#10`, `#11`, `#12` are three near-identical active Negotiation Circles — a good list shouldn't return all three |
-| **Full / inactive** | `user_id 23` | Interest `getting-promoted`; `#20 The Promotion Path` is **full** (at capacity) and `#21 Career Climbers` is **inactive** (no posts in ~7 months) — both look like great topic matches but shouldn't rank; `#22 Level Up Collective` is the healthy alternative |
+Common statuses are `400` for invalid input, `404` for an unknown user or route, `405` for unsupported methods, and `500` for an unexpected server failure.
 
-Regenerate the data anytime with `node generate.mjs` (it's deterministic — same output every run).
+## Recommendation approach
+
+### Eligibility
+
+A Circle is excluded before scoring when:
+
+- The user is already a member.
+- `max_members` is non-null and `member_count >= max_members`.
+- `access` is `unlisted`.
+- It is inactive.
+
+Inactivity is evaluated against the fixed dataset snapshot, not the current clock. A Circle is inactive only when its last activity is more than 90 days before `2026-09-21`, it has zero feed posts in 30 days, and it has fewer than five chat messages in 30 days. This keeps chat-active Circles eligible even when feed activity is low.
+
+### Personalized scoring
+
+For users with stated topic interests, scores range from 0 to 100:
+
+| Signal | Weight |
+| --- | ---: |
+| Exact primary-topic match | 50 |
+| Secondary tag overlap | 10 |
+| Feed activity | 8 |
+| Chat activity | 7 |
+| Engagement | 8 |
+| Available capacity | 6 |
+| Bounded popularity | 6 |
+| Open join policy | 5 |
+
+Topic relevance therefore dominates activity and popularity. Activity, engagement, capacity, and popularity use bounded or logarithmic normalization so raw counts cannot overwhelm relevance. Request-to-join Circles remain eligible but do not receive the open-policy points.
+
+Names, photos, biographies, profile completeness, job details, companies, industries, locations, Circle age, membership tenure, and inferred identity are not scoring signals.
+
+### Cold start
+
+Users without topic interests receive a separate quality-based score:
+
+| Signal | Weight |
+| --- | ---: |
+| Feed activity | 20 |
+| Chat activity | 20 |
+| Engagement | 20 |
+| Available capacity | 15 |
+| Bounded popularity | 15 |
+| Open join policy | 10 |
+
+Cold-start responses contain no topic matches and do not claim personal relevance.
+
+### Duplicate handling and diversification
+
+Potential duplicates must share a non-null primary topic and have description-token Jaccard similarity of at least `0.85`. They must also have either normalized-name similarity of at least `0.50` or tag similarity of at least `0.67`. Matching pairs are combined into connected clusters.
+
+The highest-ranked Circle from each duplicate cluster is considered first. Personalized lists cover distinct exact interests before allowing up to two results per topic. Cold-start lists first allow one result per topic, then up to two. A second member of a duplicate cluster is used only when unique alternatives cannot fill the requested limit; no more than two cluster members are returned.
+
+The raw candidate order is deterministic: score descending, most recent activity, member count, then Circle ID. Diversification preserves deterministic scan and backfill order.
+
+### Explanations
+
+Explanations are generated from record-backed facts only: primary and secondary topic matches, recent activity, available capacity, and approval requirements. They never contain internal scores, sensitive profile attributes, or promises about career outcomes.
+
+## Database schema approach
+
+The API uses the supplied JSON files in memory for a portable, dependency-free take-home implementation. Startup validation checks shapes, IDs, relationships, enums, counters, timestamps, membership counts, leaders, and activity authors. Duplicate Circle tags are normalized in memory; the source data is never modified.
+
+`schema.sql` provides the normalized SQLite design for a production-oriented relational model:
+
+- `topics`
+- `users`
+- `user_topic_interests`
+- `circles`
+- `circle_tags`
+- `memberships`
+- `activity`
+
+It includes primary keys, foreign keys, uniqueness constraints, enum checks, nonnegative-count checks, and supporting indexes. SQLite is not required at runtime.
+
+## Project structure
+
+```text
+data/                              Synthetic JSON seed data
+src/
+  app.js                           HTTP routing and request validation
+  config.js                        Snapshot, limits, and scoring weights
+  server.js                        Server entry point
+  data/load-data.js                Startup loading, validation, and indexes
+  http/problem-details.js          JSON and Problem Details responses
+  recommendation/
+    duplicate-detection.js         Similarity and duplicate clustering
+    diversification.js             Final-list selection and backfill
+    eligibility.js                 Candidate filters
+    explanations.js                Fact-based member explanations
+    recommendation-service.js      Recommendation orchestration
+    scoring.js                     Signal normalization and scoring
+test/                              API, engine, boundary, and schema tests
+schema.sql                         Normalized SQLite schema
+generate.mjs                       Deterministic seed-data generator
+```
+
+## Assumptions and limitations
+
+- The dataset is fully synthetic and represents a snapshot at `2026-09-21T00:00:00.000Z`.
+- The service is read-only and has no authentication, persistence, or recommendation-feedback loop.
+- `unlisted` Circles are treated as undiscoverable.
+- A null `max_members` value means uncapped.
+- Topic slugs and free-form tags provide enough semantic information for this exercise; no embeddings are used.
+- Chat content is unavailable, so chat activity is represented only by aggregate volume.
+- The fixed weights and similarity thresholds are deterministic product choices, not values learned from outcome data.
